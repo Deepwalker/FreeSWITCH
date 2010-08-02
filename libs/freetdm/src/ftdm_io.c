@@ -1334,21 +1334,28 @@ static __inline__ int chan_is_avail(ftdm_channel_t *check)
 		ftdm_test_flag(check, FTDM_CHANNEL_INUSE) ||
 		ftdm_test_flag(check, FTDM_CHANNEL_SUSPENDED) ||
 		ftdm_test_flag(check, FTDM_CHANNEL_IN_ALARM) ||
-		check->state != FTDM_CHANNEL_STATE_DOWN ||
-		!FTDM_IS_VOICE_CHANNEL(check)) {
+		check->state != FTDM_CHANNEL_STATE_DOWN) {
 		return 0;
 	}
 	return 1;
 }
 
-static __inline__ int request_channel(ftdm_channel_t *check, ftdm_channel_t **ftdmchan, 
+static __inline__ int chan_voice_is_avail(ftdm_channel_t *check)
+{
+	if (!FTDM_IS_VOICE_CHANNEL(check)) {
+		return 0;
+	}
+	return chan_is_avail(check);
+}
+
+static __inline__ int request_voice_channel(ftdm_channel_t *check, ftdm_channel_t **ftdmchan, 
 		ftdm_caller_data_t *caller_data, ftdm_direction_t direction)
 {
 	ftdm_status_t status;
-	if (chan_is_avail(check)) {
+	if (chan_voice_is_avail(check)) {
 		/* unlocked testing passed, try again with the channel locked */
 		ftdm_mutex_lock(check->mutex);
-		if (chan_is_avail(check)) {
+		if (chan_voice_is_avail(check)) {
 			if (check->span && check->span->channel_request) {
 				/* I am only unlocking here cuz this function is called
 				 * sometimes with the group or span lock held and were
@@ -1468,7 +1475,7 @@ FT_DECLARE(ftdm_status_t) ftdm_channel_open_by_group(uint32_t group_id, ftdm_dir
 			break;
 		}
 
-		if (request_channel(check, ftdmchan, caller_data, direction)) {
+		if (request_voice_channel(check, ftdmchan, caller_data, direction)) {
 			status = FTDM_SUCCESS;
 			break;
 		}
@@ -1579,7 +1586,7 @@ FT_DECLARE(ftdm_status_t) ftdm_channel_open_by_span(uint32_t span_id, ftdm_direc
 			break;
 		}
 
-		if (request_channel(check, ftdmchan, caller_data, direction)) {
+		if (request_voice_channel(check, ftdmchan, caller_data, direction)) {
 			status = FTDM_SUCCESS;
 			break;
 		}
@@ -2968,6 +2975,11 @@ static FIO_READ_FUNCTION(ftdm_raw_read)
 			ftdm_log(FTDM_LOG_WARNING, "Raw input trace failed to write all of the %zd bytes\n", dlen);
 		}
 	}
+
+	if (status == FTDM_SUCCESS && ftdmchan->span->sig_read) {
+		ftdmchan->span->sig_read(ftdmchan, data, *datalen);
+	}
+
 #ifdef FTDM_DEBUG_DTMF
 	if (status == FTDM_SUCCESS) {
 		int dlen = (int) *datalen;
@@ -3124,17 +3136,21 @@ FT_DECLARE(ftdm_status_t) ftdm_channel_read(ftdm_channel_t *ftdmchan, void *data
 
 	ftdm_assert_return(ftdmchan != NULL, FTDM_FAIL, "ftdmchan is null\n");
 	ftdm_assert_return(ftdmchan->fio != NULL, FTDM_FAIL, "No I/O module attached to ftdmchan\n");
+
+	ftdm_channel_lock(ftdmchan);
 	
 	if (!ftdm_test_flag(ftdmchan, FTDM_CHANNEL_OPEN)) {
 		snprintf(ftdmchan->last_error, sizeof(ftdmchan->last_error), "channel not open");
 		ftdm_log_chan_msg(ftdmchan, FTDM_LOG_WARNING, "cannot read from channel that is not open\n");
-		return FTDM_FAIL;
+		status = FTDM_FAIL;
+		goto done;
 	}
 
 	if (!ftdmchan->fio->read) {
 		snprintf(ftdmchan->last_error, sizeof(ftdmchan->last_error), "method not implemented");
 		ftdm_log_chan_msg(ftdmchan, FTDM_LOG_ERROR, "read method not implemented\n");
-		return FTDM_FAIL;
+		status = FTDM_FAIL;
+		goto done;
 	}
 
 	status = ftdm_raw_read(ftdmchan, data, datalen);
@@ -3203,7 +3219,8 @@ FT_DECLARE(ftdm_status_t) ftdm_channel_read(ftdm_channel_t *ftdmchan, void *data
 				} else {
 					snprintf(ftdmchan->last_error, sizeof(ftdmchan->last_error), "codec error!");
 					ftdm_log_chan(ftdmchan, FTDM_LOG_ERROR, "invalid effective codec %d\n", ftdmchan->effective_codec);
-					return FTDM_FAIL;
+					status = FTDM_FAIL;
+					goto done;
 				}
 			}
 			sln = (int16_t *) sln_buf;
@@ -3325,6 +3342,9 @@ FT_DECLARE(ftdm_status_t) ftdm_channel_read(ftdm_channel_t *ftdmchan, void *data
 		ftdm_mutex_unlock(ftdmchan->pre_buffer_mutex);
 	}
 
+done:
+
+	ftdm_channel_unlock(ftdmchan);
 
 	return status;
 }
