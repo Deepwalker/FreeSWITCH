@@ -208,8 +208,8 @@ switch_status_t name(type1 name1)
 switch_status_t name(type1 name1, type2 name2, type3 name3)
 
 class FSH323EndPoint;
-class FSProcess:public PProcess {
-	PCLASSINFO(FSProcess, PProcess);
+class FSProcess:public PLibraryProcess { 
+	PCLASSINFO(FSProcess, PLibraryProcess);
 
   public:
 	FSProcess();
@@ -582,7 +582,8 @@ H323Channel * FSH323_T38Capability::CreateChannel(
  switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG,"FSH323_T38Capability::CreateChannel %p  sessionID= %u direction=%s [%p]\n"
     , &connection
     , sessionID
-    , GetDirections[direction]);
+    , GetDirections[direction]
+    , this);
 
   return connection.CreateRealTimeLogicalChannel(*this, direction, sessionID, params);
 }
