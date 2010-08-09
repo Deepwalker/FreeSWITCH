@@ -3743,9 +3743,7 @@ SWITCH_DECLARE(int) switch_rtp_write_frame(switch_rtp_t *rtp_session, switch_fra
 		send_msg = frame->packet;
 		len = frame->packetlen;
 		ts = 0;
-		if (frame->codec && frame->codec->agreed_pt == frame->payload) {
-			send_msg->header.pt = payload;
-		}
+		send_msg->header.pt = frame->payload;
 	} else {
 		data = frame->data;
 		len = frame->datalen;
