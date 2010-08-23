@@ -417,9 +417,15 @@ int sofia_reg_find_callback(void *pArg, int argc, char **argv, char **columnName
 {
 	struct callback_t *cbt = (struct callback_t *) pArg;
 
+	if (!cbt->len) {
+		switch_console_push_match(&cbt->list, argv[0]);
+		cbt->matches++;
+		return 0;
+	}
+
 	switch_copy_string(cbt->val, argv[0], cbt->len);
 	cbt->matches++;
-	return 0;
+	return cbt->matches == 1 ? 0 : 1;
 }
 
 int sofia_reg_nat_callback(void *pArg, int argc, char **argv, char **columnNames)
@@ -709,6 +715,30 @@ char *sofia_reg_find_reg_url(sofia_profile_t *profile, const char *user, const c
 }
 
 
+switch_console_callback_match_t *sofia_reg_find_reg_url_multi(sofia_profile_t *profile, const char *user, const char *host)
+{
+	struct callback_t cbt = { 0 };
+	char sql[512] = "";
+
+	if (!user) {
+		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Called with null user!\n");
+		return NULL;
+	}
+
+	if (host) {
+		switch_snprintf(sql, sizeof(sql), "select contact from sip_registrations where sip_user='%s' and (sip_host='%s' or presence_hosts like '%%%s%%')",
+						user, host, host);
+	} else {
+		switch_snprintf(sql, sizeof(sql), "select contact from sip_registrations where sip_user='%s'", user);
+	}
+
+
+	sofia_glue_execute_sql_callback(profile, profile->ireg_mutex, sql, sofia_reg_find_callback, &cbt);
+
+	return cbt.list;
+}
+
+
 void sofia_reg_auth_challenge(nua_t *nua, sofia_profile_t *profile, nua_handle_t *nh, sofia_regtype_t regtype, const char *realm, int stale)
 {
 	switch_uuid_t uuid;
@@ -811,7 +841,9 @@ uint8_t sofia_reg_handle_register(nua_t *nua, sofia_profile_t *profile, nua_hand
 		to_host = from_host;
 
 	if (!to_user || !to_host) {
-		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Can not do authorization without a complete header\n");
+		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Can not do authorization without a complete header in REGISTER request from %s:%d\n", 
+						  network_ip, network_port);
+
 		nua_respond(nh, SIP_401_UNAUTHORIZED, NUTAG_WITH_THIS(nua), TAG_END());
 		switch_goto_int(r, 1, end);
 	}

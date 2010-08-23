@@ -587,6 +587,7 @@ SWITCH_DECLARE(unsigned int) switch_separate_string_string(char *buf, char *deli
 
 SWITCH_DECLARE(switch_bool_t) switch_is_number(const char *str);
 SWITCH_DECLARE(char *) switch_strip_spaces(const char *str);
+SWITCH_DECLARE(char *) switch_strip_whitespace(const char *str);
 SWITCH_DECLARE(char *) switch_strip_commas(char *in, char *out, switch_size_t len);
 SWITCH_DECLARE(char *) switch_strip_nonnumerics(char *in, char *out, switch_size_t len);
 SWITCH_DECLARE(char *) switch_separate_paren_args(char *str);
@@ -708,7 +709,7 @@ SWITCH_DECLARE(int) switch_split_user_domain(char *in, char **user, char **domai
 #endif
 #endif
 
-#define DUMP_EVENT(_e) 	{char *event_str;switch_event_serialize(_e, &event_str, SWITCH_FALSE);printf("DUMP\n%s\n", event_str);free(event_str);}
+#define DUMP_EVENT(_e) 	{char *event_str;switch_event_serialize(_e, &event_str, SWITCH_FALSE);switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_CRIT, "DUMP\n%s\n", event_str);free(event_str);}
 
 #ifndef _MSC_VER
 #define switch_inet_ntop inet_ntop

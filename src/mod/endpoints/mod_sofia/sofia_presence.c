@@ -73,7 +73,6 @@ struct presence_helper {
 switch_status_t sofia_presence_chat_send(const char *proto, const char *from, const char *to, const char *subject,
 										 const char *body, const char *type, const char *hint)
 {
-	char buf[256];
 	char *prof = NULL, *user = NULL, *host = NULL;
 	sofia_profile_t *profile = NULL;
 	char *ffrom = NULL;
@@ -84,6 +83,8 @@ switch_status_t sofia_presence_chat_send(const char *proto, const char *from, co
 	const char *ct = "text/html";
 	sofia_destination_t *dst = NULL;
 	char *to_uri = NULL;
+	switch_console_callback_match_t *list = NULL;
+	switch_console_callback_match_node_t *m;
 
 	if (!to) {
 		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Missing To: header.\n");
@@ -133,17 +134,19 @@ switch_status_t sofia_presence_chat_send(const char *proto, const char *from, co
 			host = prof;
 		}
 	}
-	
-	if (!to_uri && !sofia_reg_find_reg_url(profile, user, host, buf, sizeof(buf))) {
-		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Cannot find user. [%s][%s]\n", user, host);
+
+	if (to_uri) {
+		switch_console_push_match(&list, to_uri);
+	}  else if (!(list = sofia_reg_find_reg_url_multi(profile, user, host))) {
+		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Can't find registered user %s@%s\n", user, host);
 		goto end;
 	}
-
+	
 	if (!strcasecmp(proto, SOFIA_CHAT_PROTO)) {
 		from = hint;
 	} else {
 		char *fp, *p = NULL;
-
+		
 		fp = strdup(from);
 
 		if (!fp) {
@@ -168,23 +171,28 @@ switch_status_t sofia_presence_chat_send(const char *proto, const char *from, co
 		switch_safe_free(fp);
 	}
 
-	if (!(dst = sofia_glue_get_destination(to_uri ? to_uri : buf))) {
-		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_CRIT, "Memory Error!\n");
-		goto end;
-	}
+	for (m = list->head; m; m = m->next) {
 
-	/* sofia_glue is running sofia_overcome_sip_uri_weakness we do not, not sure if it matters */
+		if (!(dst = sofia_glue_get_destination(m->val))) {
+			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_CRIT, "Memory Error!\n");
+			break;
+		}
+	
+		/* sofia_glue is running sofia_overcome_sip_uri_weakness we do not, not sure if it matters */
 
-	status = SWITCH_STATUS_SUCCESS;
-	/* if this cries, add contact here too, change the 1 to 0 and omit the safe_free */
-	msg_nh = nua_handle(profile->nua, NULL, TAG_IF(dst->route_uri, NUTAG_PROXY(dst->route_uri)), TAG_IF(dst->route, SIPTAG_ROUTE_STR(dst->route)),
-						SIPTAG_FROM_STR(from), TAG_IF(contact, NUTAG_URL(contact)), SIPTAG_TO_STR(dst->to), SIPTAG_CONTACT_STR(profile->url), TAG_END());
-	nua_handle_bind(msg_nh, &mod_sofia_globals.destroy_private);
-	nua_message(msg_nh, SIPTAG_CONTENT_TYPE_STR(ct), SIPTAG_PAYLOAD_STR(body), TAG_END());
-
+		status = SWITCH_STATUS_SUCCESS;
+		/* if this cries, add contact here too, change the 1 to 0 and omit the safe_free */
+		msg_nh = nua_handle(profile->nua, NULL, TAG_IF(dst->route_uri, NUTAG_PROXY(dst->route_uri)), TAG_IF(dst->route, SIPTAG_ROUTE_STR(dst->route)),
+							SIPTAG_FROM_STR(from), TAG_IF(contact, NUTAG_URL(contact)), SIPTAG_TO_STR(dst->to), SIPTAG_CONTACT_STR(profile->url), TAG_END());
+		nua_handle_bind(msg_nh, &mod_sofia_globals.destroy_private);
+		nua_message(msg_nh, SIPTAG_CONTENT_TYPE_STR(ct), SIPTAG_PAYLOAD_STR(body), TAG_END());
+		sofia_glue_free_destination(dst);
+	}		
+	
+	switch_console_free_matches(&list);
 
   end:
-	sofia_glue_free_destination(dst);
+	
 	switch_safe_free(contact);
 	switch_safe_free(ffrom);
 	switch_safe_free(dup);
@@ -1056,11 +1064,17 @@ static char *gen_pidf(char *user_agent, char *id, char *url, char *open, char *r
 	if (switch_stristr("polycom", user_agent)) {
 		*ct = "application/xpidf+xml";
 
-		/* of course!, lets make a big deal over dashes. Now the stupidity is complete. */
+		/* If unknown/none prpid is provided, just show the user as online. */
 		if (!prpid) {
-			prpid = "unknown";
+			prpid = "online";
 		}
 
+		/* FS currently send prpid closed on register, this force it to online */
+		if (!strncasecmp(status, "Registered", 10) && !strcasecmp(prpid, "closed")) {
+			prpid = "online";
+		}
+
+		/* of course!, lets make a big deal over dashes. Now the stupidity is complete. */
 		if (!strcmp(prpid, "on-the-phone")) {
 			prpid = "onthephone";
 		}
@@ -1080,62 +1094,59 @@ static char *gen_pidf(char *user_agent, char *id, char *url, char *open, char *r
 							 " </atom>\n" 
 							 "</presence>\n", status, id, id, url, open, prpid);
 	} else {
+		char *xml_rpid = NULL;
+		
 		*ct = "application/pidf+xml";
+
+		if (!strcasecmp(open, "closed")) {
+			status = "Unregistered";
+			prpid = NULL;
+		}
 
 		if (!strncasecmp(status, "Registered", 10)) {
 			prpid = NULL;
 			status = "Available";
 		}
-
+		
 
 		if (!strcasecmp(status, "Unregistered")) {
 			prpid = NULL;
 			open = "closed";
 		}
 
-		if (zstr(status)) {
-			status = "Available";
-		}
-		
 		if (zstr(rpid)) {
 			prpid = NULL;
 		}
 
 
-		if (prpid) {
-			ret = switch_mprintf("<?xml version=\"1.0\" encoding=\"ISO-8859-1\"?> \n"
-								 "<presence xmlns='urn:ietf:params:xml:ns:pidf' \n"
-								 "xmlns:dm='urn:ietf:params:xml:ns:pidf:data-model' \n"
-								 "xmlns:rpid='urn:ietf:params:xml:ns:pidf:rpid' \n"
-								 "xmlns:c='urn:ietf:params:xml:ns:pidf:cipid' entity='%s'>\n"
-								 " <tuple id='t6a5ed77e'>\n"
-								 "  <status>\r\n"
-								 "   <basic>%s</basic>\n"
-								 "  </status>\n"
-								 " </tuple>\n"
-								 " <dm:person id='p06360c4a'>\n"
-								 "  <rpid:activities>\r\n"
-								 "   <rpid:%s/>\n"
-								 "  </rpid:activities>\n" 
-								 "  <dm:note>%s</dm:note>\n" 
-								 " </dm:person>\n" 
-								 "</presence>", id, open, prpid, status);
-		} else {
-			ret = switch_mprintf("<?xml version=\"1.0\" encoding=\"ISO-8859-1\"?> \n"
-								 "<presence xmlns='urn:ietf:params:xml:ns:pidf' \n"
-								 "xmlns:dm='urn:ietf:params:xml:ns:pidf:data-model' \n"
-								 "xmlns:rpid='urn:ietf:params:xml:ns:pidf:rpid' \n"
-								 "xmlns:c='urn:ietf:params:xml:ns:pidf:cipid' entity='%s'>\n"
-								 " <tuple id='t6a5ed77e'>\n"
-								 "  <status>\r\n"
-								 "   <basic>%s</basic>\n"
-								 "  </status>\n"
-								 " </tuple>\n"
-								 " <dm:person id='p06360c4a'>\n"
-								 "  <dm:note>%s</dm:note>\n" 
-								 " </dm:person>\n" 
-								 "</presence>", id, open, status);
+		if (zstr(status) && !zstr(prpid)) {
+			status = "Available";
 		}
+		
+		if (prpid) {
+			xml_rpid = switch_mprintf("  <rpid:activities>\r\n"
+									  "   <rpid:%s/>\n"
+									  "  </rpid:activities>\n", prpid);
+		}
+
+		ret = switch_mprintf("<?xml version=\"1.0\" encoding=\"ISO-8859-1\"?> \n"
+							 "<presence xmlns='urn:ietf:params:xml:ns:pidf' \n"
+							 "xmlns:dm='urn:ietf:params:xml:ns:pidf:data-model' \n"
+							 "xmlns:rpid='urn:ietf:params:xml:ns:pidf:rpid' \n"
+							 "xmlns:c='urn:ietf:params:xml:ns:pidf:cipid' entity='%s'>\n"
+							 " <tuple id='t6a5ed77e'>\n"
+							 "  <status>\r\n"
+							 "   <basic>%s</basic>\n"
+							 "  </status>\n"
+							 " </tuple>\n"
+							 " <dm:person id='p06360c4a'>\n"
+							 "%s"
+							 "  <dm:note>%s</dm:note>\n"
+							 " </dm:person>\n" 
+							 "</presence>", id, open, switch_str_nil(xml_rpid), status);
+		
+
+		switch_safe_free(xml_rpid);
 	}
 
 
@@ -1186,9 +1197,13 @@ static int sofia_presence_sub_callback(void *pArg, int argc, char **argv, char *
 	//printf("arg %d[%s] = [%s]\n", i, columnNames[i], argv[i]);
 	//}
 	
-	if (argc > 18 && !zstr(argv[17]) && !zstr(argv[18])) {
-		status = argv[17];
-		rpid = argv[18];
+	if (argc > 18) {
+		if (!zstr(argv[17])) {
+			status = argv[17];
+		}
+		if (!zstr(argv[18])) {
+			rpid = argv[18];
+		}
 		open_closed = argv[19];
 	}
 
@@ -1268,7 +1283,6 @@ static int sofia_presence_sub_callback(void *pArg, int argc, char **argv, char *
 		switch_stream_handle_t stream = { 0 };
 		const char *direction = switch_str_nil(switch_event_get_header(helper->event, "presence-call-direction"));
 		const char *uuid = switch_str_nil(switch_event_get_header(helper->event, "unique-id"));
-		const char *state = switch_str_nil(switch_event_get_header(helper->event, "channel-state"));
 		const char *event_status = switch_str_nil(switch_event_get_header(helper->event, "status"));
 		const char *astate = switch_str_nil(switch_event_get_header(helper->event, "astate"));
 		const char *answer_state = switch_str_nil(switch_event_get_header(helper->event, "answer-state"));
@@ -1278,7 +1292,7 @@ static int sofia_presence_sub_callback(void *pArg, int argc, char **argv, char *
 		const char *from_user = switch_str_nil(switch_event_get_header(helper->event, "variable_sip_from_user"));
 		char *clean_to_user = NULL;
 		char *clean_from_user = NULL;
-		const char *p_to_user = switch_str_nil(switch_event_get_header(helper->event, "to-user"));
+		int force_status = 0;
 #if 0
 		char *buf;
 		switch_event_serialize(helper->event, &buf, SWITCH_FALSE);
@@ -1299,14 +1313,6 @@ static int sofia_presence_sub_callback(void *pArg, int argc, char **argv, char *
 			dft_state = "confirmed";
 		}
 
-		if (!strcasecmp(state, "cs_reporting")) {
-			goto end;
-		}
-
-		if (!strcasecmp(event_status, "Registered")) {
-			answer_state = "resubscribe";
-		}
-
 		if (is_dialog) {
 			stream.write_function(&stream,
 								  "<?xml version=\"1.0\"?>\n"
@@ -1316,18 +1322,16 @@ static int sofia_presence_sub_callback(void *pArg, int argc, char **argv, char *
 								  !strcasecmp(answer_state, "resubscribe") ? "partial" : "full", clean_id);
 		}
 
-		if (strcasecmp(answer_state, "resubscribe")) {
-
-			if (!strcasecmp(state, "cs_hangup")) {
-				astate = "terminated";
-			} else if (zstr(astate)) {
-				astate = switch_str_nil(switch_event_get_header(helper->event, "answer-state"));
-				if (zstr(astate)) {
-					if (is_dialog) {
-						astate = dft_state;
-					} else {
-						astate = "terminated";
-					}
+		if (strcasecmp(event_status, "Registered")) {
+			if (!zstr(answer_state)) {
+				astate = answer_state;
+			}
+			
+			if (zstr(astate)) {
+				if (is_dialog) {
+					astate = dft_state;
+				} else {
+					astate = "terminated";
 				}
 			}
 
@@ -1339,17 +1343,27 @@ static int sofia_presence_sub_callback(void *pArg, int argc, char **argv, char *
 				astate = "confirmed";
 			}
 
-			if (!strcasecmp(astate, "ringing")) {
-				if (!strcasecmp(direction, "recipient")) {
-					astate = "early";
-				} else {
-					astate = "confirmed";
-				}
+			if (!strcasecmp(astate, "hangup")) {
+				astate = "terminated";
 			}
+
 			if (is_dialog) {
+				if (!strcasecmp(astate, "ringing")) {
+					if (!strcasecmp(direction, "recipient")) {
+						astate = "early";
+					} else {
+						astate = "confirmed";
+					}
+				}
+
 				stream.write_function(&stream, "<dialog id=\"%s\" direction=\"%s\">\n", uuid, direction);
 				stream.write_function(&stream, "<state>%s</state>\n", astate);
+			} else {
+				if (!strcasecmp(astate, "ringing")) {
+					astate = "early";
+				}
 			}
+
 			if (!strcasecmp(astate, "early") || !strcasecmp(astate, "confirmed")) {
 
 				clean_to_user = switch_mprintf("%s", sub_to_user ? sub_to_user : to_user);
@@ -1410,39 +1424,54 @@ static int sofia_presence_sub_callback(void *pArg, int argc, char **argv, char *
 			switch_set_string(status_line, status);
 
 			if (in) {
+				const char *direction = switch_event_get_header(helper->event, "Caller-Direction");
+				const char *op, *what = "Ring";
+				
+				if (direction && !strcasecmp(direction, "outbound")) {
+					op = switch_event_get_header(helper->event, "Other-Leg-Caller-ID-Number");
+				} else {
+					if (!(op = switch_event_get_header(helper->event, "Caller-Callee-ID-Number"))) {
+						op = switch_event_get_header(helper->event, "Caller-Destination-Number");
+					}
+				}
+
+				if (direction) {
+					what = strcasecmp(direction, "outbound") ? "Call" : "Ring";
+				}
+
 				if (!strcmp(astate, "early")) {
-					switch_snprintf(status_line, sizeof(status_line), "Ring %s", switch_str_nil(from_id));
+					if (zstr(op)) {
+						switch_snprintf(status_line, sizeof(status_line), "%s %s", what, status);
+					} else {
+						switch_snprintf(status_line, sizeof(status_line), "%s %s", what, op);
+					}
+
 					rpid = "on-the-phone";
+					force_status = 1;
+
 				} else if (!strcmp(astate, "confirmed")) {
-					char *dest = switch_event_get_header(helper->event, "Caller-Destination-Number");
-					if (zstr(from_id) && !zstr(dest)) {
-						from_id = dest;
-					}
-
-					if (zstr(from_id)) {
-						from_id = p_to_user;
-					}
-
-					if (zstr(from_id)) {
+					if (zstr(op)) {
 						switch_snprintf(status_line, sizeof(status_line), "On The Phone %s", status);
 					} else {
-						switch_snprintf(status_line, sizeof(status_line), "Talk %s", switch_str_nil(from_id));
+						switch_snprintf(status_line, sizeof(status_line), "Talk %s", op);
 					}
+
 					rpid = "on-the-phone";
+					force_status = 1;
 				}
 
 				open = "open";
 			} else {
 				open = "closed";
 			}
-			
+
 			if (open_closed) {
 				open = open_closed;
 			}
 			
 			prpid = translate_rpid(rpid);
 
-			if (!zstr(dialog_status)) {
+			if (!zstr(dialog_status) && !force_status) {
 				status = dialog_status;
 				switch_set_string(status_line, status);
 			}
@@ -1453,7 +1482,6 @@ static int sofia_presence_sub_callback(void *pArg, int argc, char **argv, char *
 			
 			
 			pl = gen_pidf(user_agent, clean_id, profile->url, open, rpid, prpid, status_line, &ct);
-
 		}
 
 	} else {
@@ -2467,19 +2495,22 @@ void sofia_presence_handle_sip_i_publish(nua_t *nua, sofia_profile_t *profile, n
 				exp_delta = (sip->sip_expires ? sip->sip_expires->ex_delta : 3600);
 				exp = (long) switch_epoch_time_now(NULL) + exp_delta;
 
+				
 				if ((sql =
 					 switch_mprintf("delete from sip_presence where sip_user='%q' and sip_host='%q' "
 									" and profile_name='%q' and hostname='%q'", from_user, from_host, profile->name, mod_sofia_globals.hostname))) {
 					sofia_glue_execute_sql_now(profile, &sql, SWITCH_TRUE);
 				}
-
+					
 				if ((sql =
 					 switch_mprintf("insert into sip_presence (sip_user, sip_host, status, rpid, expires, user_agent,"
 									" profile_name, hostname, open_closed) "
 									"values ('%q','%q','%q','%q',%ld,'%q','%q','%q','%q')",
 									from_user, from_host, note_txt, rpid, exp, full_agent, profile->name, mod_sofia_globals.hostname, open_closed))) {
+						
 					sofia_glue_execute_sql_now(profile, &sql, SWITCH_TRUE);
 				}
+				
 
 				event_type = sip_header_as_string(profile->home, (void *) sip->sip_event);
 				
@@ -2595,8 +2626,11 @@ void sofia_presence_handle_sip_i_message(int status,
 
 			from_addr = switch_mprintf("%s@%s", from_user, from_host);
 
-			sofia_presence_set_hash_key(hash_key, sizeof(hash_key), sip);
-			if ((tech_pvt = (private_object_t *) switch_core_hash_find(profile->chat_hash, hash_key))) {
+			if (sofia_test_pflag(profile, PFLAG_IN_DIALOG_CHAT)) {
+				sofia_presence_set_hash_key(hash_key, sizeof(hash_key), sip);
+			}
+
+			if (sofia_test_pflag(profile, PFLAG_IN_DIALOG_CHAT) && (tech_pvt = (private_object_t *) switch_core_hash_find(profile->chat_hash, hash_key))) {
 				channel = switch_core_session_get_channel(tech_pvt->session);
 				if (switch_event_create(&event, SWITCH_EVENT_MESSAGE) == SWITCH_STATUS_SUCCESS) {
 					switch_event_add_header_string(event, SWITCH_STACK_BOTTOM, "proto", SOFIA_CHAT_PROTO);

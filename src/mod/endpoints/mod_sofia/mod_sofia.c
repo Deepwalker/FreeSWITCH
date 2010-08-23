@@ -1679,14 +1679,16 @@ static switch_status_t sofia_receive_message(switch_core_session_t *session, swi
 						to_host = switch_channel_get_variable(rchannel, "sip_to_host");
 						from_user = switch_channel_get_variable(channel, "sip_from_user");
 						from_host = switch_channel_get_variable(channel, "sip_from_host");
+						to_tag = switch_channel_get_variable(rchannel, "sip_to_tag");
+						from_tag = switch_channel_get_variable(rchannel, "sip_from_tag");
 					} else {
 						to_host = switch_channel_get_variable(channel, "sip_to_host");
 						from_user = switch_channel_get_variable(rchannel, "sip_from_user");
 						from_host = switch_channel_get_variable(rchannel, "sip_from_host");
+						from_tag = switch_channel_get_variable(rchannel, "sip_to_tag");
+						to_tag = switch_channel_get_variable(rchannel, "sip_from_tag");
 					}
 
-					to_tag = switch_channel_get_variable(rchannel, "sip_to_tag");
-					from_tag = switch_channel_get_variable(rchannel, "sip_from_tag");
 					switch_core_session_rwunlock(rsession);
 				}
 			}
@@ -3542,12 +3544,22 @@ SWITCH_STANDARD_API(sofia_function)
 			sofia_glue_recover(SWITCH_TRUE);
 			stream->write_function(stream, "Flushing recovery database.\n");
 		} else {
-			int x = sofia_glue_recover(SWITCH_FALSE);
+			int32_t old = 0, x = 0;
+
+			switch_core_session_ctl(SCSC_SPS, &old);
+
+			x = 10000000;
+			switch_core_session_ctl(SCSC_SPS, &x);
+			
+			x = sofia_glue_recover(SWITCH_FALSE);
+
 			if (x) {
 				stream->write_function(stream, "Recovered %d call(s)\n", x);
 			} else {
 				stream->write_function(stream, "No calls to recover.\n");
 			}
+
+			switch_core_session_ctl(SCSC_SPS, &old);
 		}
 
 		goto done;
@@ -3781,7 +3793,12 @@ static switch_call_cause_t sofia_outgoing_channel(switch_core_session_t *session
 		}
 
 		if (!strncasecmp(dest, "sip:", 4) || !strncasecmp(dest, "sips:", 5)) {
+			char *c;
 			tech_pvt->dest = switch_core_session_strdup(nsession, dest);
+			if ((c = strchr(tech_pvt->dest, ':'))) {
+				c++;
+				tech_pvt->e_dest = switch_core_session_strdup(nsession, c);
+			}
 		} else if ((host = strchr(dest, '%'))) {
 			char buf[1024];
 			*host = '@';
@@ -3810,6 +3827,7 @@ static switch_call_cause_t sofia_outgoing_channel(switch_core_session_t *session
 		} else {
 			host++;
 			tech_pvt->dest = switch_core_session_alloc(nsession, strlen(dest) + 5);
+			tech_pvt->e_dest = switch_core_session_strdup(nsession, dest);
 			switch_snprintf(tech_pvt->dest, strlen(dest) + 5, "sip:%s", dest);
 		}
 	}
@@ -4171,40 +4189,45 @@ static void general_event_handler(switch_event_t *event)
 			const char *body = switch_event_get_body(event);
 			sofia_profile_t *profile;
 			nua_handle_t *nh;
-
+			
 			if (profile_name && ct && user && host) {
 				char *id = NULL;
 				char *contact, *p;
-				char buf[512] = "";
-
+				switch_console_callback_match_t *list = NULL;
+				switch_console_callback_match_node_t *m;
+				
 				if (!(profile = sofia_glue_find_profile(profile_name))) {
 					switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Can't find profile %s\n", profile_name);
 					return;
 				}
-
-
-				if (!sofia_reg_find_reg_url(profile, user, host, buf, sizeof(buf))) {
-					switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Can't find user %s@%s\n", user, host);
+				
+				if (!(list = sofia_reg_find_reg_url_multi(profile, user, host))) {
+					switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Can't find registered user %s@%s\n", user, host);
 					return;
 				}
 
 				id = switch_mprintf("sip:%s@%s", user, host);
 
 				switch_assert(id);
-				contact = sofia_glue_get_url_from_contact(buf, 0);
 
-				if ((p = strstr(contact, ";fs_"))) {
-					*p = '\0';
+				for (m = list->head; m; m = m->next) {
+					contact = sofia_glue_get_url_from_contact(m->val, 0);
+
+					if ((p = strstr(contact, ";fs_"))) {
+						*p = '\0';
+					}
+
+					nh = nua_handle(profile->nua,
+									NULL, NUTAG_URL(contact), SIPTAG_FROM_STR(id), SIPTAG_TO_STR(id), SIPTAG_CONTACT_STR(profile->url), TAG_END());
+
+					nua_message(nh, NUTAG_NEWSUB(1), SIPTAG_CONTENT_TYPE_STR(ct),
+								TAG_IF(!zstr(body), SIPTAG_PAYLOAD_STR(body)), TAG_IF(!zstr(subject), SIPTAG_SUBJECT_STR(subject)), TAG_END());
+
+
+					free(id);
 				}
+				switch_console_free_matches(&list);
 
-				nh = nua_handle(profile->nua,
-								NULL, NUTAG_URL(contact), SIPTAG_FROM_STR(id), SIPTAG_TO_STR(id), SIPTAG_CONTACT_STR(profile->url), TAG_END());
-
-				nua_message(nh, NUTAG_NEWSUB(1), SIPTAG_CONTENT_TYPE_STR(ct),
-							TAG_IF(!zstr(body), SIPTAG_PAYLOAD_STR(body)), TAG_IF(!zstr(subject), SIPTAG_SUBJECT_STR(subject)), TAG_END());
-
-
-				free(id);
 				sofia_glue_release_profile(profile);
 			}
 

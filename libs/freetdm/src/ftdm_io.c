@@ -750,9 +750,26 @@ FT_DECLARE(ftdm_status_t) ftdm_span_add_channel(ftdm_span_t *span, ftdm_socket_t
 		ftdm_channel_t *new_chan = span->channels[++span->chan_count];
 
 		if (!new_chan) {
+#ifdef FTDM_DEBUG_CHAN_MEMORY
+			void *chanmem = NULL;
+			int pages = 1;
+			int pagesize = sysconf(_SC_PAGE_SIZE);
+			if (sizeof(*new_chan) > pagesize) {
+				pages = sizeof(*new_chan)/pagesize;
+				pages++;
+			}
+			ftdm_log(FTDM_LOG_DEBUG, "Allocating %d pages of %d bytes for channel of size %d\n", pages, pagesize, sizeof(*new_chan));
+			if (posix_memalign(&chanmem, pagesize, pagesize*pages)) {
+				return FTDM_FAIL;
+			}
+			ftdm_log(FTDM_LOG_DEBUG, "Channel pages allocated start at mem %p\n", chanmem);
+			memset(chanmem, 0, sizeof(*new_chan));
+			new_chan = chanmem;
+#else
 			if (!(new_chan = ftdm_calloc(1, sizeof(*new_chan)))) {
 				return FTDM_FAIL;
 			}
+#endif
 			span->channels[span->chan_count] = new_chan;
 		}
 
@@ -2109,24 +2126,28 @@ FT_DECLARE(ftdm_status_t) _ftdm_channel_call_indicate(const char *file, const ch
 
 FT_DECLARE(ftdm_status_t) _ftdm_channel_call_place(const char *file, const char *func, int line, ftdm_channel_t *ftdmchan)
 {
-	ftdm_status_t status;
+	ftdm_status_t status = FTDM_FAIL;
 
 	ftdm_assert(ftdmchan != NULL, "null channel");
-	ftdm_set_flag_locked(ftdmchan, FTDM_CHANNEL_OUTBOUND);	
+
+	ftdm_channel_lock(ftdmchan);
+
 	if (ftdmchan->span->outgoing_call) {
-		if ((status = ftdmchan->span->outgoing_call(ftdmchan)) == FTDM_SUCCESS) {
-			ftdm_set_flag(ftdmchan, FTDM_CHANNEL_OUTBOUND);
-		}
-		return status;
+		status = ftdmchan->span->outgoing_call(ftdmchan);
 	} else {
+		status = FTDM_NOTIMPL;
 		ftdm_log(FTDM_LOG_ERROR, "outgoing_call method not implemented in this span!\n");
 	}
+
 #ifdef __WINDOWS__
 	UNREFERENCED_PARAMETER(file);
 	UNREFERENCED_PARAMETER(func);
 	UNREFERENCED_PARAMETER(line);
 #endif
-	return FTDM_FAIL;
+
+	ftdm_channel_unlock(ftdmchan);
+
+	return status;
 }
 
 FT_DECLARE(ftdm_status_t) ftdm_channel_set_sig_status(ftdm_channel_t *ftdmchan, ftdm_signaling_status_t sigstatus)
@@ -2261,11 +2282,6 @@ FT_DECLARE(ftdm_status_t) ftdm_channel_close(ftdm_channel_t **ftdmchan)
 		return FTDM_FAIL;
 	}
 
-	if (!ftdm_test_flag(check, FTDM_CHANNEL_INUSE)) {
-		ftdm_log(FTDM_LOG_WARNING, "Called ftdm_channel_close but never ftdm_channel_open in chan %d:%d??\n", check->span_id, check->chan_id);
-		return FTDM_FAIL;
-	}
-
 	if (ftdm_test_flag(check, FTDM_CHANNEL_CONFIGURED)) {
 		ftdm_mutex_lock(check->mutex);
 		if (ftdm_test_flag(check, FTDM_CHANNEL_OPEN)) {
@@ -2275,6 +2291,8 @@ FT_DECLARE(ftdm_status_t) ftdm_channel_close(ftdm_channel_t **ftdmchan)
 				ftdm_channel_reset(check);
 				*ftdmchan = NULL;
 			}
+		} else {
+			ftdm_log_chan_msg(check, FTDM_LOG_WARNING, "Called ftdm_channel_close but never ftdm_channel_open??\n");
 		}
 		check->ring_count = 0;
 		ftdm_mutex_unlock(check->mutex);

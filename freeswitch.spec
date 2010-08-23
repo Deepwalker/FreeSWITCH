@@ -35,6 +35,8 @@
 %define prefix    %{_prefix}
 %define sysconfdir	/opt/freeswitch/conf
 %define _sysconfdir	%{sysconfdir}
+%define logfiledir	/var/log/freeswitch
+%define runtimedir	/var/run/freeswitch
 
 Name:         	freeswitch
 Summary:      	FreeSWITCH open source telephony platform
@@ -320,7 +322,7 @@ export QA_RPATHS=$[ 0x0001|0x0002 ]
 #													Application Modules
 #
 ###############################################################################################################################
-APPLICATION_MODULES_AE="applications/mod_avmd  applications/mod_commands applications/mod_conference applications/mod_db applications/mod_directory applications/mod_distributor applications/mod_dptools applications/mod_easyroute applications/mod_enum applications/mod_esf applications/mod_expr"
+APPLICATION_MODULES_AE="applications/mod_avmd  applications/mod_commands applications/mod_conference applications/mod_db applications/mod_directory applications/mod_distributor applications/mod_dptools applications/mod_easyroute applications/mod_enum applications/mod_esf applications/mod_expr applications/mod_callcenter"
 
 APPLICATION_MODULES_FM="applications/mod_fifo applications/mod_fsv applications/mod_hash applications/mod_lcr applications/mod_limit applications/mod_memcache"
 
@@ -459,7 +461,7 @@ fi
 		%{?configure_options}
 
 #Create the version header file here
-cat src/include/switch_version.h.in | sed "s/@SVN_VERSION@/%{ersion}/g" > src/include/switch_version.h
+cat src/include/switch_version.h.in | sed "s/@SVN_VERSION@/%{version}/g" > src/include/switch_version.h
 touch .noversion
 
 %{__make}
@@ -476,6 +478,8 @@ touch .noversion
 
 # Create a log dir
 %{__mkdir} -p %{buildroot}%{prefix}/log
+%{__mkdir} -p %{buildroot}%{logfiledir}
+%{__mkdir} -p %{buildroot}%{runtimedir}
 
 %ifos linux
 # Install init files
@@ -554,7 +558,8 @@ fi
 %dir %attr(0750, freeswitch, daemon) %{prefix}/db
 %dir %attr(0750, freeswitch, daemon) %{prefix}/grammar
 %dir %attr(0750, freeswitch, daemon) %{prefix}/htdocs
-%dir %attr(0750, freeswitch, daemon) %{prefix}/log
+%dir %attr(0750, freeswitch, daemon) %{logfiledir}
+%dir %attr(0750, freeswitch, daemon) %{runtimedir}
 %dir %attr(0750, freeswitch, daemon) %{prefix}/scripts
 #
 #################################### Config Directory Structure ################################################################
@@ -595,6 +600,7 @@ fi
 %config(noreplace) %attr(0640, freeswitch, daemon) %{prefix}/conf/mime.types
 %config(noreplace) %attr(0640, freeswitch, daemon) %{prefix}/conf/autoload_configs/acl.conf.xml
 %config(noreplace) %attr(0640, freeswitch, daemon) %{prefix}/conf/autoload_configs/alsa.conf.xml
+%config(noreplace) %attr(0640, freeswitch, daemon) %{prefix}/conf/autoload_configs/callcenter.conf.xml
 %config(noreplace) %attr(0640, freeswitch, daemon) %{prefix}/conf/autoload_configs/cdr_csv.conf.xml
 %config(noreplace) %attr(0640, freeswitch, daemon) %{prefix}/conf/autoload_configs/cdr_pg_csv.conf.xml
 %config(noreplace) %attr(0640, freeswitch, daemon) %{prefix}/conf/autoload_configs/cidlookup.conf.xml
@@ -741,6 +747,7 @@ fi
 %{prefix}/mod/mod_event_multicast.so* 
 %{prefix}/mod/mod_event_socket.so* 
 %{prefix}/mod/mod_expr.so*
+%{prefix}/mod/mod_callcenter.so*
 %{prefix}/mod/mod_fifo.so*
 %{prefix}/mod/mod_file_string.so*
 %{prefix}/mod/mod_flite.so*
