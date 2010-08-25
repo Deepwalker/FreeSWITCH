@@ -522,7 +522,7 @@ static void actual_sofia_presence_event_handler(switch_event_t *event)
 		alt_event_type = "presence";
 	}
 
-	if ((user = strdup(from))) {
+	if (from && (user = strdup(from))) {
 		if ((host = strchr(user, '@'))) {
 			char *p;
 			*host++ = '\0';
@@ -1065,12 +1065,7 @@ static char *gen_pidf(char *user_agent, char *id, char *url, char *open, char *r
 		*ct = "application/xpidf+xml";
 
 		/* If unknown/none prpid is provided, just show the user as online. */
-		if (!prpid) {
-			prpid = "online";
-		}
-
-		/* FS currently send prpid closed on register, this force it to online */
-		if (!strncasecmp(status, "Registered", 10) && !strcasecmp(prpid, "closed")) {
+		if (!prpid || !strcasecmp(prpid, "unknown")) {
 			prpid = "online";
 		}
 
@@ -1104,10 +1099,13 @@ static char *gen_pidf(char *user_agent, char *id, char *url, char *open, char *r
 		}
 
 		if (!strncasecmp(status, "Registered", 10)) {
-			prpid = NULL;
 			status = "Available";
 		}
 		
+		if (!strcasecmp(status, "Available")) {
+			prpid = NULL;
+		}
+
 
 		if (!strcasecmp(status, "Unregistered")) {
 			prpid = NULL;
@@ -1121,6 +1119,7 @@ static char *gen_pidf(char *user_agent, char *id, char *url, char *open, char *r
 
 		if (zstr(status) && !zstr(prpid)) {
 			status = "Available";
+			prpid = NULL;
 		}
 		
 		if (prpid) {
@@ -1430,9 +1429,11 @@ static int sofia_presence_sub_callback(void *pArg, int argc, char **argv, char *
 				if (direction && !strcasecmp(direction, "outbound")) {
 					op = switch_event_get_header(helper->event, "Other-Leg-Caller-ID-Number");
 				} else {
-					if (!(op = switch_event_get_header(helper->event, "Caller-Callee-ID-Number"))) {
-						op = switch_event_get_header(helper->event, "Caller-Destination-Number");
-					}
+					op = switch_event_get_header(helper->event, "Caller-Callee-ID-Number");
+				}
+
+				if (!op) {
+					op = switch_event_get_header(helper->event, "Caller-Destination-Number");
 				}
 
 				if (direction) {
@@ -1451,7 +1452,7 @@ static int sofia_presence_sub_callback(void *pArg, int argc, char **argv, char *
 
 				} else if (!strcmp(astate, "confirmed")) {
 					if (zstr(op)) {
-						switch_snprintf(status_line, sizeof(status_line), "On The Phone %s", status);
+						switch_snprintf(status_line, sizeof(status_line), "On The Phone");
 					} else {
 						switch_snprintf(status_line, sizeof(status_line), "Talk %s", op);
 					}

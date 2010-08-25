@@ -3680,7 +3680,10 @@ SWITCH_DECLARE(int) switch_rtp_write_frame(switch_rtp_t *rtp_session, switch_fra
 		send_msg = frame->packet;
 		len = frame->packetlen;
 		ts = 0;
-		send_msg->header.pt = frame->payload;
+		// Trying this based on http://jira.freeswitch.org/browse/MODSOFIA-90
+		//if (frame->codec && frame->codec->agreed_pt == frame->payload) {
+		send_msg->header.pt = payload;
+		//}
 	} else {
 		data = frame->data;
 		len = frame->datalen;
